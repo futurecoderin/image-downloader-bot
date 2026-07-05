@@ -1,0 +1,5 @@
+# Telegram Bot Token (get it from @BotFather)
+TELEGRAM_BOT_TOKEN=your_telegram_bot_token_here
+
+# Google Sheets Logging
+GOOGLE_SPREADSHEET_ID=1JewhEUv237NZihRPc0bIXQUyT2cvHn71FvgNb0vWH7g
