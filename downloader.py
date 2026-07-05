@@ -136,7 +136,7 @@ def download_with_gallery_dl(url: str, output_dir: str) -> list:
         url
     ]
     try:
-        result = subprocess.run(cmd_resolve, capture_output=True, text=True, timeout=20)
+        result = subprocess.run(cmd_resolve, capture_output=True, text=True, timeout=60)
         if result.returncode == 0:
             lines = [line.strip() for line in result.stdout.splitlines() if line.strip().startswith("http")]
             if lines:
@@ -241,6 +241,16 @@ def extract_best_image_from_html(url: str, output_dir: str) -> str:
             
         candidates.append((absolute_url, score))
         
+    # Fallback: Check for raw Facebook CDN links in scripts if no candidates were found
+    if not candidates:
+        logger.info("No candidates found via soup. Trying direct Facebook CDN regex match...")
+        fbcdn_matches = re.findall(r'https://scontent\.[a-zA-Z0-9\-]+\.fna\.fbcdn\.net/v/[^\s"\'\\>]+', html_content)
+        for match in fbcdn_matches:
+            # Clean HTML escape characters and JSON escapes
+            clean_url = match.replace("&amp;", "&").replace("\\", "")
+            if clean_url not in [c[0] for c in candidates]:
+                candidates.append((clean_url, 100))
+                
     if not candidates:
         raise ValueError("Could not find any suitable images on this page.")
         
