@@ -16,6 +16,38 @@ def clean_filename(filename: str) -> str:
     """Sanitize the filename by removing invalid characters."""
     return re.sub(r'[\\/*?:"<>|]', "", filename)
 
+def resolve_redirects(url: str) -> str:
+    """Resolve redirection URLs (like facebook.com/share/r/) to their absolute destination using curl."""
+    try:
+        cmd = [
+            "curl", "-s", "-I", "-L",
+            "-o", "/dev/null",
+            "-w", "%{url_effective}",
+            "-H", "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            url
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+        if result.returncode == 0 and result.stdout.strip():
+            resolved = result.stdout.strip()
+            logger.info(f"Resolved redirect: {url} -> {resolved}")
+            return resolved
+    except Exception as e:
+        logger.warning(f"Failed resolving redirect for {url}: {e}")
+    return url
+
+def fetch_html_with_curl(url: str) -> str:
+    """Fetch webpage HTML using curl to bypass HTTP/1.1 and TLS blocks."""
+    headers = [
+        "-H", "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "-H", "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+        "-H", "Accept-Language: en-US,en;q=0.5"
+    ]
+    cmd = ["curl", "-s", "-L"] + headers + [url]
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=25)
+    if result.returncode == 0:
+        return result.stdout
+    raise RuntimeError(f"curl failed with code {result.returncode}: {result.stderr}")
+
 def is_direct_image_url(url: str) -> bool:
     """Check if the URL points directly to an image file."""
     parsed = urllib.parse.urlparse(url)
@@ -37,61 +69,103 @@ def is_direct_image_url(url: str) -> bool:
     return False
 
 def download_direct_image(url: str, output_dir: str) -> str:
-    """Download a direct image URL using requests."""
+    """Download a direct image URL using requests, falling back to curl if needed."""
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     }
-    r = requests.get(url, headers=headers, stream=True, timeout=15)
-    r.raise_for_status()
     
-    # Try to extract filename from URL path
-    parsed = urllib.parse.urlparse(url)
-    filename = os.path.basename(parsed.path)
-    if not filename or not filename.lower().endswith(IMAGE_EXTENSIONS):
-        # Fallback filename
-        content_type = r.headers.get("Content-Type", "")
-        ext = "jpg"
-        if "png" in content_type:
-            ext = "png"
-        elif "webp" in content_type:
-            ext = "webp"
-        elif "gif" in content_type:
-            ext = "gif"
-        filename = f"image_{int(r.elapsed.total_seconds() * 1000)}.{ext}"
+    # Try downloading with requests
+    try:
+        r = requests.get(url, headers=headers, stream=True, timeout=20)
+        r.raise_for_status()
         
-    filename = clean_filename(filename)
-    filepath = os.path.join(output_dir, filename)
-    
-    with open(filepath, 'wb') as f:
-        for chunk in r.iter_content(chunk_size=8192):
-            if chunk:
-                f.write(chunk)
-                
-    return filepath
+        parsed = urllib.parse.urlparse(url)
+        filename = os.path.basename(parsed.path)
+        if not filename or not filename.lower().endswith(IMAGE_EXTENSIONS):
+            content_type = r.headers.get("Content-Type", "")
+            ext = "jpg"
+            if "png" in content_type:
+                ext = "png"
+            elif "webp" in content_type:
+                ext = "webp"
+            elif "gif" in content_type:
+                ext = "gif"
+            filename = f"image_{int(r.elapsed.total_seconds() * 1000)}.{ext}"
+            
+        filename = clean_filename(filename)
+        filepath = os.path.join(output_dir, filename)
+        
+        with open(filepath, 'wb') as f:
+            for chunk in r.iter_content(chunk_size=8192):
+                if chunk:
+                    f.write(chunk)
+        return filepath
+    except Exception as e:
+        logger.warning(f"requests download failed for {url}: {e}. Falling back to curl...")
+        
+        # Fallback to curl download
+        parsed = urllib.parse.urlparse(url)
+        filename = os.path.basename(parsed.path) or f"image_{hash(url)}[:10].jpg"
+        if not filename.lower().endswith(IMAGE_EXTENSIONS):
+            filename += ".jpg"
+        filename = clean_filename(filename)
+        filepath = os.path.join(output_dir, filename)
+        
+        cmd = [
+            "curl", "-s", "-L",
+            "-o", filepath,
+            "-H", "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            url
+        ]
+        result = subprocess.run(cmd, capture_output=True, timeout=30)
+        if result.returncode == 0 and os.path.exists(filepath) and os.path.getsize(filepath) > 0:
+            return filepath
+        raise RuntimeError(f"Failed to download image via requests or curl: {e}")
 
 def download_with_gallery_dl(url: str, output_dir: str) -> list:
     """
-    Download images using gallery-dl CLI.
+    Download images using gallery-dl CLI. Resolves URLs first with -g to prevent download loops.
     Returns list of paths to downloaded files.
     """
-    logger.info(f"Attempting gallery-dl download for: {url}")
-    # Run gallery-dl to download to output_dir
-    # --dest controls the base destination path
-    # --no-mtime maintains download time
-    cmd = [
+    logger.info(f"Attempting gallery-dl link resolution for: {url}")
+    
+    # 1. Run gallery-dl -g to extract direct image links
+    cmd_resolve = [
+        "gallery-dl",
+        "-g",
+        url
+    ]
+    try:
+        result = subprocess.run(cmd_resolve, capture_output=True, text=True, timeout=20)
+        if result.returncode == 0:
+            lines = [line.strip() for line in result.stdout.splitlines() if line.strip().startswith("http")]
+            if lines:
+                logger.info(f"Resolved {len(lines)} direct URLs via gallery-dl -g. Downloading them...")
+                downloaded_files = []
+                for idx, direct_url in enumerate(lines):
+                    try:
+                        filepath = download_direct_image(direct_url, output_dir)
+                        downloaded_files.append(filepath)
+                    except Exception as download_err:
+                        logger.error(f"Failed downloading resolved URL {direct_url}: {download_err}")
+                if downloaded_files:
+                    return downloaded_files
+    except Exception as resolve_err:
+        logger.error(f"gallery-dl resolution error: {resolve_err}")
+
+    # 2. Fallback to standard gallery-dl download mode if resolution failed/empty
+    logger.info("Falling back to standard gallery-dl download mode...")
+    cmd_download = [
         "gallery-dl",
         "--dest", output_dir,
         url
     ]
-    
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=90)
+        result = subprocess.run(cmd_download, capture_output=True, text=True, timeout=90)
         if result.returncode == 0:
-            # Find all files in the output directory recursively
             downloaded_files = []
             for root, _, files in os.walk(output_dir):
                 for file in files:
-                    # Ignore temporary/system files
                     if file.lower().endswith(IMAGE_EXTENSIONS):
                         downloaded_files.append(os.path.join(root, file))
             return downloaded_files
@@ -105,14 +179,24 @@ def download_with_gallery_dl(url: str, output_dir: str) -> list:
 def extract_best_image_from_html(url: str, output_dir: str) -> str:
     """
     Scrape a website, analyze its <img> tags, and download the largest high-resolution image.
+    Uses curl fallback to bypass HTTP/1.1 TLS handshake blocks.
     """
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    }
-    r = requests.get(url, headers=headers, timeout=15)
-    r.raise_for_status()
-    
-    soup = BeautifulSoup(r.text, 'html.parser')
+    html_content = ""
+    try:
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        }
+        r = requests.get(url, headers=headers, timeout=10)
+        r.raise_for_status()
+        html_content = r.text
+    except Exception as req_err:
+        logger.warning(f"requests HTML fetch failed ({req_err}). Trying curl fallback...")
+        try:
+            html_content = fetch_html_with_curl(url)
+        except Exception as curl_err:
+            raise RuntimeError(f"Failed fetching page with requests or curl: {curl_err}")
+
+    soup = BeautifulSoup(html_content, 'html.parser')
     img_tags = soup.find_all('img')
     
     if not img_tags:
@@ -121,11 +205,9 @@ def extract_best_image_from_html(url: str, output_dir: str) -> str:
     candidates = []
     
     for img in img_tags:
-        # Determine candidate src
         src = img.get('src')
         srcset = img.get('srcset')
         
-        # If srcset exists, take the largest source URL (usually the last entry)
         if srcset:
             parts = srcset.split(',')
             if parts:
@@ -136,49 +218,40 @@ def extract_best_image_from_html(url: str, output_dir: str) -> str:
         if not src:
             continue
             
-        # Resolve relative URLs
         absolute_url = urllib.parse.urljoin(url, src)
-        
-        # Ignore obvious icons, small tracking images, ads, etc.
         lowercase_url = absolute_url.lower()
         if any(term in lowercase_url for term in ['icon', 'logo', 'avatar', 'spacer', 'ad-', '/ad/', 'sprite', 'pixel']):
             continue
             
-        # Check attributes for sizing hints
         width = img.get('width')
         height = img.get('height')
         score = 0
         
-        # Calculate sizing scores
         try:
             if width and height:
                 w, h = int(width), int(height)
-                if w < 100 or h < 100:  # Skip tiny thumbnails
+                if w < 100 or h < 100:
                     continue
                 score = w * h
         except ValueError:
             pass
             
-        # Prioritize OpenGraph / high-res keywords in paths
         if any(kw in lowercase_url for kw in ['original', 'full', 'large', 'hi-res', 'highres', 'wp-content/uploads']):
-            score += 500000  # Bonus score equivalent to ~700x700 px dimensions
+            score += 500000
             
         candidates.append((absolute_url, score))
         
     if not candidates:
-        raise ValueError("Could not find any suitable high-resolution images on this page.")
+        raise ValueError("Could not find any suitable images on this page.")
         
-    # Sort candidates by score descending
     candidates.sort(key=lambda x: x[1], reverse=True)
     
-    # Try downloading candidates starting with the highest score
     errors = []
     for candidate_url, score in candidates[:5]:
         try:
             logger.info(f"Downloading HTML image candidate: {candidate_url} (Score: {score})")
             filepath = download_direct_image(candidate_url, output_dir)
             
-            # Verify it's a valid image and check dimensions
             try:
                 with Image.open(filepath) as img_check:
                     width, height = img_check.size
@@ -190,7 +263,6 @@ def extract_best_image_from_html(url: str, output_dir: str) -> str:
                 if os.path.exists(filepath):
                     os.remove(filepath)
                 raise im_err
-                
         except Exception as e:
             errors.append(f"Failed {candidate_url}: {e}")
             continue
@@ -200,26 +272,29 @@ def extract_best_image_from_html(url: str, output_dir: str) -> str:
 def download_image(url: str, output_dir: str) -> list:
     """
     Main entry point for downloading image(s) from a URL.
-    Returns a list of local file paths.
+    Resolves redirects and handles gallery and single image paths.
     """
     os.makedirs(output_dir, exist_ok=True)
     
     # 1. Clean URL
     url = url.strip()
     
-    # 2. Check if direct image link
+    # 2. Resolve redirects first (crucial for share links like facebook.com/share/r/)
+    url = resolve_redirects(url)
+    
+    # 3. Check if direct image link
     if is_direct_image_url(url):
         logger.info(f"Detected direct image URL: {url}")
         filepath = download_direct_image(url, output_dir)
         return [filepath]
         
-    # 3. Try downloading via gallery-dl (social media / galleries)
+    # 4. Try downloading via gallery-dl
     files = download_with_gallery_dl(url, output_dir)
     if files:
         logger.info(f"Successfully downloaded {len(files)} files via gallery-dl")
         return files
         
-    # 4. Fallback: Parse webpage HTML for best image
+    # 5. Fallback: Parse webpage HTML for best image
     logger.info(f"gallery-dl failed or unsupported. Scraping HTML for images: {url}")
     filepath = extract_best_image_from_html(url, output_dir)
     return [filepath]
