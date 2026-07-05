@@ -1,7 +1,6 @@
 import os
 import shutil
 import logging
-from flask import Flask, request
 from dotenv import load_dotenv
 import telebot
 import downloader
@@ -26,28 +25,10 @@ if not TOKEN:
     sys.exit(0)
 
 bot = telebot.TeleBot(TOKEN)
-app = Flask(__name__)
 
 # Temporary downloads directory
 DOWNLOADS_DIR = os.path.join(script_dir, "downloads")
 os.makedirs(DOWNLOADS_DIR, exist_ok=True)
-
-@app.route('/webhook', methods=['POST'])
-def webhook():
-    if request.headers.get('content-type') == 'application/json':
-        json_string = request.get_data().decode('utf-8')
-        update = telebot.types.Update.de_json(json_string)
-        bot.process_new_updates([update])
-        return 'OK', 200
-    else:
-        return 'Forbidden', 403
-
-# Auto webhook set
-public_url = os.getenv("WEBHOOK_URL") or os.getenv("RENDER_EXTERNAL_URL")
-if public_url:
-    logger.info(f"Setting webhook to {public_url}/webhook...")
-    bot.remove_webhook()
-    bot.set_webhook(url=f"{public_url}/webhook")
 
 @bot.message_handler(commands=['start', 'help'])
 def send_welcome(message):
@@ -157,29 +138,25 @@ def handle_download_request(message):
                 logger.error(f"Failed cleaning directory {session_dir}: {clean_err}")
 
 if __name__ == "__main__":
-    if public_url:
-        port = int(os.getenv("PORT", 8080))
-        app.run(host="0.0.0.0", port=port)
-    else:
-        logger.info("Starting Image Downloader Bot polling locally...")
-        print("Bot is running in polling mode... Press Ctrl+C to stop.")
+    logger.info("Starting Image Downloader Bot polling locally...")
+    print("Bot is running in polling mode... Press Ctrl+C to stop.")
+    try:
+        bot.remove_webhook()
+        
+        # Set description
         try:
-            bot.remove_webhook()
+            bot.set_my_description(
+                "📸 Download high-quality, original-resolution images from any web URL!\n\n"
+                "Send any direct image link or website URL (Pinterest, Twitter, Flickr, etc.) to get original uncompressed files.\n\n"
+                "🔗 Developed & maintained by https://abhishekvigyan.com"
+            )
+            bot.set_my_short_description(
+                "Download high-quality images from any URL. Developed by abhishekvigyan.com"
+            )
+            logger.info("Bot description updated successfully.")
+        except Exception as _de:
+            logger.warning(f"Could not set bot description: {_de}")
             
-            # Set description
-            try:
-                bot.set_my_description(
-                    "📸 Download high-quality, original-resolution images from any web URL!\n\n"
-                    "Send any direct image link or website URL (Pinterest, Twitter, Flickr, etc.) to get original uncompressed files.\n\n"
-                    "🔗 Developed & maintained by https://abhishekvigyan.com"
-                )
-                bot.set_my_short_description(
-                    "Download high-quality images from any URL. Developed by abhishekvigyan.com"
-                )
-                logger.info("Bot description updated successfully.")
-            except Exception as _de:
-                logger.warning(f"Could not set bot description: {_de}")
-                
-            bot.infinity_polling()
-        except Exception as e:
-            logger.error(f"Error occurred: {e}")
+        bot.infinity_polling()
+    except Exception as e:
+        logger.error(f"Error occurred: {e}")
