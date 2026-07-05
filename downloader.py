@@ -379,24 +379,10 @@ def download_facebook_via_json(url: str, output_dir: str) -> list:
                 except Exception as e:
                     logger.error(f"Failed downloading post image {img_url}: {e}")
         else:
-            # Single-image post! Download only the image matching first_photo_id (or default to the first one if not matched)
-            logger.info(f"Detected Facebook single-image post ({set_id}). Downloading only the post image...")
-            target_image = None
-            for img_url, img_meta in images:
-                if str(img_meta.get("id")) == str(first_photo_id):
-                    target_image = (img_url, img_meta)
-                    break
-                    
-            if not target_image and images:
-                target_image = images[0]
-                
-            if target_image:
-                try:
-                    filepath = download_direct_image(target_image[0], output_dir)
-                    downloaded_files.append(filepath)
-                except Exception as e:
-                    logger.error(f"Failed downloading post image {target_image[0]}: {e}")
-                    
+            # Single-image post album! Return empty to fallback to mobile layout scraper for 100% accuracy
+            logger.info(f"Detected Facebook single-image post ({set_id}). Falling back to mobile layout meta scraper...")
+            return []
+            
         return downloaded_files
         
     except Exception as e:

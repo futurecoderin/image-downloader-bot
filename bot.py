@@ -72,8 +72,8 @@ def handle_download_request(message):
         if not downloaded_paths:
             raise ValueError("No download paths returned by downloader engine.")
 
-        # Cap galleries to maximum 5 images to prevent spam/limits
-        max_images = 5
+        # Cap galleries to maximum 35 images to prevent spam/limits
+        max_images = 35
         total_found = len(downloaded_paths)
         if total_found > max_images:
             bot.send_message(
