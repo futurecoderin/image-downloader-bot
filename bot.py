@@ -39,7 +39,6 @@ def send_welcome(message):
         "• Pinterest, Imgur, Twitter/X, Instagram, Flickr\n"
         "• Direct image links (.jpg, .png, .webp)\n"
         "• Standard web blogs & news articles\n\n"
-        "I will send the image both as a **Photo** (for preview) and as an **Uncompressed Document** (to preserve original quality and metadata)!\n\n"
         "🔗 _Developed & maintained by_ [abhishekvigyan.com](https://abhishekvigyan.com)"
     )
     bot.reply_to(message, welcome_text, parse_mode="Markdown", disable_web_page_preview=True)
@@ -98,23 +97,12 @@ def handle_download_request(message):
 
             caption = f"🖼️ Image {idx+1}/{len(downloaded_paths)} (High Quality)\n\n🔗 Developed by abhishekvigyan.com" if len(downloaded_paths) > 1 else "🖼️ High-Quality Image\n\n🔗 Developed by abhishekvigyan.com"
 
-            # 1. Send as Photo (Preview)
+            # 1. Send as Photo
             try:
                 with open(filepath, 'rb') as photo:
                     bot.send_photo(message.chat.id, photo, caption=caption)
             except Exception as pe:
                 logger.error(f"Failed to send photo: {pe}")
-
-            # 2. Send as Document (Uncompressed Original)
-            try:
-                with open(filepath, 'rb') as doc:
-                    bot.send_document(
-                        message.chat.id, 
-                        doc, 
-                        caption=f"📁 Original File (Uncompressed) - Image {idx+1}/{len(downloaded_paths)}" if len(downloaded_paths) > 1 else "📁 Original File (Uncompressed)"
-                    )
-            except Exception as de:
-                logger.error(f"Failed to send document: {de}")
 
         # Delete status loading message
         bot.delete_message(message.chat.id, status_msg.message_id)
@@ -146,12 +134,12 @@ if __name__ == "__main__":
         # Set description
         try:
             bot.set_my_description(
-                "📸 Download high-quality, original-resolution images from any web URL!\n\n"
-                "Send any direct image link or website URL (Pinterest, Twitter, Flickr, etc.) to get original uncompressed files.\n\n"
+                "📸 Download high-quality images from any web URL!\n\n"
+                "Send any direct image link or website URL (Pinterest, Twitter, Flickr, etc.) to get the image.\n\n"
                 "🔗 Developed & maintained by https://abhishekvigyan.com"
             )
             bot.set_my_short_description(
-                "Download high-quality images from any URL. Developed by abhishekvigyan.com"
+                "Download images from any URL. Developed by abhishekvigyan.com"
             )
             logger.info("Bot description updated successfully.")
         except Exception as _de:
