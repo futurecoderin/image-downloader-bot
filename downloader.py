@@ -129,9 +129,10 @@ def download_with_gallery_dl(url: str, output_dir: str) -> list:
     """
     logger.info(f"Attempting gallery-dl link resolution for: {url}")
     
-    # 1. Run gallery-dl -g to extract direct image links
+    # 1. Run gallery-dl -g to extract direct image links (restricted to first 5 matches)
     cmd_resolve = [
         "gallery-dl",
+        "--range", "1-5",
         "-g",
         url
     ]
@@ -157,6 +158,7 @@ def download_with_gallery_dl(url: str, output_dir: str) -> list:
     logger.info("Falling back to standard gallery-dl download mode...")
     cmd_download = [
         "gallery-dl",
+        "--range", "1-5",
         "--dest", output_dir,
         url
     ]
