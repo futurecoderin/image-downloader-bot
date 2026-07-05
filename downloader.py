@@ -281,6 +281,47 @@ def extract_best_image_from_html(url: str, output_dir: str) -> str:
             
     raise ValueError(f"Could not download any valid image. Details:\n" + "\n".join(errors))
 
+def extract_facebook_mobile_image(url: str, output_dir: str) -> str:
+    """Extract the main image of a Facebook post by requesting the mobile layout and scraping meta tags."""
+    # Convert domain to mobile layout
+    parsed_url = urllib.parse.urlparse(url)
+    url = url.replace(parsed_url.netloc, "m.facebook.com")
+    
+    # Fetch page HTML with mobile browser headers
+    headers = [
+        "-H", "User-Agent: Mozilla/5.0 (iPhone; CPU iPhone OS 16_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.5 Mobile/15E148 Safari/604.1",
+        "-H", "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+        "-H", "Accept-Language: en-US,en;q=0.5"
+    ]
+    cmd = ["curl", "-s", "-L"] + headers + [url]
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=25)
+    if result.returncode != 0:
+        raise RuntimeError(f"curl failed with code {result.returncode}: {result.stderr}")
+        
+    html_content = result.stdout
+    
+    # Look for fbcdn meta links using regex (very fast and robust)
+    matches = re.findall(r'<meta[^>]+content="([^"]+)"', html_content)
+    for match in matches:
+        if 'fbcdn.net' in match:
+            direct_url = match.replace('&amp;', '&').replace('\\', '')
+            logger.info(f"Extracted Facebook mobile CDN image: {direct_url}")
+            return download_direct_image(direct_url, output_dir)
+            
+    # Soup fallback
+    soup = BeautifulSoup(html_content, 'html.parser')
+    og_img = soup.find('meta', property='og:image')
+    tw_img = soup.find('meta', name='twitter:image')
+    
+    for tag in [og_img, tw_img]:
+        if tag and tag.get('content'):
+            direct_url = tag.get('content').replace('&amp;', '&').replace('\\', '')
+            if 'fbcdn.net' in direct_url:
+                logger.info(f"Extracted Facebook mobile soup image: {direct_url}")
+                return download_direct_image(direct_url, output_dir)
+                
+    raise ValueError("No Facebook CDN link found in mobile page HTML meta tags.")
+
 def download_image(url: str, output_dir: str) -> list:
     """
     Main entry point for downloading image(s) from a URL.
@@ -294,19 +335,29 @@ def download_image(url: str, output_dir: str) -> list:
     # 2. Resolve redirects first (crucial for share links like facebook.com/share/r/)
     url = resolve_redirects(url)
     
-    # 3. Check if direct image link
+    # 3. Handle Facebook URLs using the fast mobile meta scraper first
+    if "facebook.com" in url.lower():
+        try:
+            logger.info(f"Using high-priority Facebook mobile meta scraper for: {url}")
+            filepath = extract_facebook_mobile_image(url, output_dir)
+            if filepath:
+                return [filepath]
+        except Exception as fb_err:
+            logger.warning(f"Facebook mobile scraper failed: {fb_err}. Falling back to gallery-dl...")
+            
+    # 4. Check if direct image link
     if is_direct_image_url(url):
         logger.info(f"Detected direct image URL: {url}")
         filepath = download_direct_image(url, output_dir)
         return [filepath]
         
-    # 4. Try downloading via gallery-dl
+    # 5. Try downloading via gallery-dl
     files = download_with_gallery_dl(url, output_dir)
     if files:
         logger.info(f"Successfully downloaded {len(files)} files via gallery-dl")
         return files
         
-    # 5. Fallback: Parse webpage HTML for best image
+    # 6. Fallback: Parse webpage HTML for best image
     logger.info(f"gallery-dl failed or unsupported. Scraping HTML for images: {url}")
     filepath = extract_best_image_from_html(url, output_dir)
     return [filepath]
