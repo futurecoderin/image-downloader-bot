@@ -322,6 +322,87 @@ def extract_facebook_mobile_image(url: str, output_dir: str) -> str:
                 
     raise ValueError("No Facebook CDN link found in mobile page HTML meta tags.")
 
+def download_facebook_via_json(url: str, output_dir: str) -> list:
+    """Download Facebook post images by parsing gallery-dl's JSON output."""
+    import json
+    logger.info(f"Using Facebook JSON extractor for: {url}")
+    
+    # Run gallery-dl in JSON metadata mode, restricted to a max range of 30 images to prevent infinite album crawling
+    cmd = [
+        "gallery-dl",
+        "--range", "1-30",
+        "-j",
+        url
+    ]
+    
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=50)
+        if result.returncode != 0:
+            logger.warning(f"gallery-dl JSON extraction failed with code {result.returncode}. Stderr: {result.stderr}")
+            return []
+            
+        data = json.loads(result.stdout)
+        
+        # Parse set metadata block (type 2 block) and image blocks (type 3 blocks)
+        set_meta = None
+        images = []
+        
+        for item in data:
+            if not isinstance(item, list) or len(item) < 2:
+                continue
+            block_type = item[0]
+            block_data = item[1]
+            
+            if block_type == 2:
+                set_meta = block_data
+            elif block_type == 3:
+                img_url = item[1]
+                img_meta = item[2] if len(item) > 2 else {}
+                images.append((img_url, img_meta))
+                
+        if not set_meta or not images:
+            logger.warning("No set metadata or images extracted from Facebook JSON.")
+            return []
+            
+        set_id = set_meta.get("set_id", "")
+        first_photo_id = set_meta.get("first_photo_id", "")
+        
+        downloaded_files = []
+        
+        if set_id.startswith("pcb."):
+            # Multi-image post collection! Download all resolved images
+            logger.info(f"Detected Facebook multi-image post collection ({set_id}). Downloading all images...")
+            for img_url, img_meta in images:
+                try:
+                    filepath = download_direct_image(img_url, output_dir)
+                    downloaded_files.append(filepath)
+                except Exception as e:
+                    logger.error(f"Failed downloading post image {img_url}: {e}")
+        else:
+            # Single-image post! Download only the image matching first_photo_id (or default to the first one if not matched)
+            logger.info(f"Detected Facebook single-image post ({set_id}). Downloading only the post image...")
+            target_image = None
+            for img_url, img_meta in images:
+                if str(img_meta.get("id")) == str(first_photo_id):
+                    target_image = (img_url, img_meta)
+                    break
+                    
+            if not target_image and images:
+                target_image = images[0]
+                
+            if target_image:
+                try:
+                    filepath = download_direct_image(target_image[0], output_dir)
+                    downloaded_files.append(filepath)
+                except Exception as e:
+                    logger.error(f"Failed downloading post image {target_image[0]}: {e}")
+                    
+        return downloaded_files
+        
+    except Exception as e:
+        logger.error(f"Error in download_facebook_via_json: {e}")
+        return []
+
 def download_image(url: str, output_dir: str) -> list:
     """
     Main entry point for downloading image(s) from a URL.
@@ -335,15 +416,24 @@ def download_image(url: str, output_dir: str) -> list:
     # 2. Resolve redirects first (crucial for share links like facebook.com/share/r/)
     url = resolve_redirects(url)
     
-    # 3. Handle Facebook URLs using the fast mobile meta scraper first
+    # 3. Handle Facebook URLs
     if "facebook.com" in url.lower():
+        # First try: high-precision JSON parsing (handles both pcb multi-posts and single-image posts perfectly)
         try:
-            logger.info(f"Using high-priority Facebook mobile meta scraper for: {url}")
+            filepaths = download_facebook_via_json(url, output_dir)
+            if filepaths:
+                return filepaths
+        except Exception as json_err:
+            logger.warning(f"Facebook JSON crawler failed: {json_err}. Trying mobile meta scraper...")
+            
+        # Second try: mobile layout meta scraper fallback (handles single images)
+        try:
+            logger.info(f"Using Facebook mobile meta scraper fallback for: {url}")
             filepath = extract_facebook_mobile_image(url, output_dir)
             if filepath:
                 return [filepath]
         except Exception as fb_err:
-            logger.warning(f"Facebook mobile scraper failed: {fb_err}. Falling back to gallery-dl...")
+            logger.warning(f"Facebook mobile scraper failed: {fb_err}. Falling back to general engines...")
             
     # 4. Check if direct image link
     if is_direct_image_url(url):
